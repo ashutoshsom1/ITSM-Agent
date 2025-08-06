@@ -1,12 +1,27 @@
 {
-  "name": "automate",
+  "name": "itsm-ai-agent",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "AI-powered ITSM agent with Microsoft Teams integration",
+  "main": "main.py",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "python run.py",
+    "test": "pytest test_main.py -v",
+    "deploy": "azd up",
+    "build": "docker build -t itsm-ai-agent ."
   },
-  "keywords": [],
+  "keywords": [
+    "ai",
+    "itsm",
+    "teams",
+    "bot",
+    "azure",
+    "openai",
+    "chatbot"
+  ],
   "author": "ashutosh.somvanshi@nihilent.com",
   "license": "ISC",
-  "description": ""
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ashutoshsom1/ITSM-Agent"
+  }
 }
