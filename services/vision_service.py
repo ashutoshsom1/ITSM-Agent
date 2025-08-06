@@ -15,7 +15,7 @@ class VisionService:
     """
     
     def __init__(self):
-        self.subscription_key = os.getenv("COMPUTER_VISION_SUBSCRIPTION_KEY")
+        self.subscription_key = os.getenv("COMPUTER_VISION_KEY")
         self.endpoint = os.getenv("COMPUTER_VISION_ENDPOINT")
         
         if self.subscription_key and self.endpoint:

@@ -11,6 +11,17 @@ import httpx
 import base64
 from io import BytesIO
 from PIL import Image
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Debug: Check if environment variables are loaded
+print("=== Environment Variables Check ===")
+print(f"AZURE_OPENAI_ENDPOINT: {os.getenv('AZURE_OPENAI_ENDPOINT')}")
+print(f"AZURE_OPENAI_KEY: {'***' + os.getenv('AZURE_OPENAI_KEY', '')[-4:] if os.getenv('AZURE_OPENAI_KEY') else 'None'}")
+print(f"AZURE_OPENAI_DEPLOYMENT_NAME: {os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME')}")
+print("=====================================")
 
 # Import our custom modules
 from services.memory_service import MemoryService
@@ -162,6 +173,7 @@ async def analyze_image(
         analysis_result = await vision_service.analyze_image(image_data, context)
         
         # Generate contextual response based on image analysis
+        # Always generate AI response, with user context if available
         if user_id:
             user_profile = await memory_service.get_user_profile(user_id)
             conversation_history = await memory_service.get_conversation_history(
@@ -169,16 +181,21 @@ async def analyze_image(
                 conversation_id or "image_analysis",
                 limit=5
             )
-            
-            # Generate AI response based on image analysis
-            ai_response = await openai_service.generate_image_response(
-                analysis_result,
-                context,
-                conversation_history,
-                user_profile
-            )
-            
-            # Store interaction
+        else:
+            # Default profile for anonymous users
+            user_profile = {"user_id": "anonymous", "preferences": {}}
+            conversation_history = []
+        
+        # Generate AI response based on image analysis
+        ai_response = await openai_service.generate_image_response(
+            analysis_result,
+            context,
+            conversation_history,
+            user_profile
+        )
+        
+        # Store interaction only if user_id is provided
+        if user_id:
             await memory_service.store_conversation(
                 user_id,
                 f"[Image Analysis] {context or 'User shared an image'}",
@@ -192,16 +209,10 @@ async def analyze_image(
                 "assistant",
                 conversation_id or "image_analysis"
             )
-            
-            return {
-                "analysis": analysis_result,
-                "ai_response": ai_response,
-                "suggestions": analysis_result.get("suggestions", []),
-                "detected_issues": analysis_result.get("detected_issues", [])
-            }
         
         return {
             "analysis": analysis_result,
+            "ai_response": ai_response,
             "suggestions": analysis_result.get("suggestions", []),
             "detected_issues": analysis_result.get("detected_issues", [])
         }
@@ -423,4 +434,4 @@ async def _generate_proactive_suggestions(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, port=8000)

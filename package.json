@@ -5,9 +5,7 @@
   "main": "main.py",
   "scripts": {
     "start": "python run.py",
-    "test": "pytest test_main.py -v",
-    "deploy": "azd up",
-    "build": "docker build -t itsm-ai-agent ."
+    "test": "pytest test_main.py -v"
   },
   "keywords": [
     "ai",

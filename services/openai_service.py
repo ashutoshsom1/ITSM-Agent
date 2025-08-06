@@ -109,20 +109,24 @@ class OpenAIService:
         system_prompt = f"""
         You are an AI assistant helping a user understand an image they shared.
         
+        IMPORTANT: The user has already uploaded an image and I have analyzed it using Azure Computer Vision. 
+        You do NOT need to ask them to upload an image - it has already been processed.
+        
         User Profile: {user_profile.get('preferences', {})}
         
-        Image Analysis Results:
+        DETAILED IMAGE ANALYSIS RESULTS:
         {analysis_summary}
         
-        Provide helpful, actionable insights based on the image analysis.
+        Based on this comprehensive analysis, provide helpful, actionable insights about what you can see in the image.
         If issues are detected, offer step-by-step solutions.
         Be encouraging and supportive in your response.
+        Reference specific details from the analysis above.
         """
         
         user_prompt = f"""
-        I shared an image with you. {context or 'Please help me understand what you see and provide guidance.'}
+        I just shared an image with you and you've analyzed it. {context or 'Please help me understand what you see and provide guidance based on your analysis.'}
         
-        Based on your analysis, what insights can you provide?
+        Based on the detailed analysis results above, what insights can you provide about my image?
         """
         
         messages = [
@@ -194,23 +198,56 @@ class OpenAIService:
         """Summarize image analysis results for prompt"""
         summary = []
         
-        if analysis.get("description"):
-            summary.append(f"Description: {analysis['description']}")
+        # Image basic info
+        image_info = analysis.get("image_info", {})
+        if image_info:
+            summary.append(f"Image Details: {image_info.get('width', 'Unknown')}x{image_info.get('height', 'Unknown')} {image_info.get('format', 'Unknown format')}")
         
+        # Main description
+        if analysis.get("description"):
+            summary.append(f"What I can see: {analysis['description']}")
+            
+        if analysis.get("confidence"):
+            summary.append(f"Analysis confidence: {analysis['confidence']:.1%}")
+        
+        # Detected text (most important for Excel screenshot)
         if analysis.get("detected_text"):
-            summary.append(f"Text Found: {analysis['detected_text']}")
+            text = analysis['detected_text']
+            if len(text) > 500:
+                text = text[:500] + "... (truncated)"
+            summary.append(f"Text content found: {text}")
+        
+        # Objects and tags
+        if analysis.get("tags"):
+            tags = analysis["tags"]
+            if isinstance(tags, list) and len(tags) > 0:
+                tag_names = [tag.get("name", str(tag)) if isinstance(tag, dict) else str(tag) for tag in tags[:10]]
+                summary.append(f"Identified elements: {', '.join(tag_names)}")
         
         if analysis.get("objects"):
-            objects = ", ".join(analysis["objects"])
-            summary.append(f"Objects Detected: {objects}")
+            objects = analysis["objects"]
+            if isinstance(objects, list) and len(objects) > 0:
+                obj_names = [obj.get("name", str(obj)) if isinstance(obj, dict) else str(obj) for obj in objects[:5]]
+                summary.append(f"Objects detected: {', '.join(obj_names)}")
         
-        if analysis.get("detected_issues"):
-            issues = ", ".join(analysis["detected_issues"])
-            summary.append(f"Potential Issues: {issues}")
-        
+        # Categories
         if analysis.get("categories"):
             categories = ", ".join(analysis["categories"])
-            summary.append(f"Categories: {categories}")
+            summary.append(f"Content categories: {categories}")
+        
+        # Issues and suggestions
+        if analysis.get("detected_issues"):
+            issues = ", ".join(analysis["detected_issues"])
+            summary.append(f"Potential issues detected: {issues}")
+            
+        if analysis.get("suggestions"):
+            suggestions = analysis["suggestions"][:3]  # Limit to top 3
+            summary.append(f"AI suggestions: {'; '.join(suggestions)}")
+        
+        # Color information
+        color_info = analysis.get("color_info", {})
+        if color_info and color_info.get("dominant_colors"):
+            summary.append(f"Dominant colors: {', '.join(color_info['dominant_colors'])}")
         
         return "\n".join(summary) if summary else "Basic image analysis completed"
     
