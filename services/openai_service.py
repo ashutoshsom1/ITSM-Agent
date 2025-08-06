@@ -2,7 +2,7 @@ import os
 import json
 import asyncio
 from typing import List, Dict, Optional, Any
-import openai
+from openai import AsyncAzureOpenAI, AsyncOpenAI
 from datetime import datetime
 
 class OpenAIService:
@@ -11,20 +11,35 @@ class OpenAIService:
     """
     
     def __init__(self):
-        self.api_key = os.getenv("OPENAI_API_KEY")
+        self.api_key = os.getenv("AZURE_OPENAI_KEY") or os.getenv("OPENAI_API_KEY")
         self.endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")  # For Azure OpenAI
         self.api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
-        self.deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
+        self.deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-35-turbo-16k")
         
-        if self.endpoint:
+        print(f"OpenAI Service Initialization:")
+        print(f"API Key: {'***' + self.api_key[-4:] if self.api_key else 'None'}")
+        print(f"Endpoint: {self.endpoint}")
+        print(f"API Version: {self.api_version}")
+        print(f"Deployment: {self.deployment_name}")
+        
+        if self.endpoint and self.api_key:
             # Azure OpenAI configuration
-            openai.api_type = "azure"
-            openai.api_base = self.endpoint
-            openai.api_version = self.api_version
-            openai.api_key = self.api_key
-        else:
+            self.client = AsyncAzureOpenAI(
+                api_key=self.api_key,
+                api_version=self.api_version,
+                azure_endpoint=self.endpoint
+            )
+            self.is_azure = True
+            print("✓ Azure OpenAI client initialized successfully")
+        elif self.api_key:
             # Standard OpenAI configuration
-            openai.api_key = self.api_key
+            self.client = AsyncOpenAI(api_key=self.api_key)
+            self.is_azure = False
+            print("✓ Standard OpenAI client initialized successfully")
+        else:
+            self.client = None
+            self.is_azure = False
+            print("⚠️ Warning: No OpenAI credentials found. Using fallback responses.")
     
     async def generate_response(
         self,
@@ -52,17 +67,31 @@ class OpenAIService:
         messages.append({"role": "user", "content": user_message})
         
         try:
-            if self.endpoint:
+            print(f"Generating response - Client available: {self.client is not None}")
+            print(f"Is Azure: {self.is_azure}")
+            print(f"User message: {user_message[:50]}...")
+            
+            if self.client is None:
+                print("No client available, using fallback")
+                return self._get_fallback_response(user_message, context_analysis)
+            
+            if self.is_azure:
                 # Azure OpenAI
+                print("Calling Azure OpenAI...")
                 response = await self._call_azure_openai(messages)
             else:
                 # Standard OpenAI
+                print("Calling Standard OpenAI...")
                 response = await self._call_openai(messages)
             
+            print(f"Response received: {response[:100]}...")
             return response
             
         except Exception as e:
             print(f"Error generating response: {e}")
+            print(f"Exception type: {type(e)}")
+            import traceback
+            traceback.print_exc()
             return self._get_fallback_response(user_message, context_analysis)
     
     async def generate_image_response(
@@ -102,7 +131,10 @@ class OpenAIService:
         ]
         
         try:
-            if self.endpoint:
+            if self.client is None:
+                return "I can see you've shared an image, but I'm having trouble connecting to my AI service right now. Could you describe what you're seeing so I can still help you?"
+            
+            if self.is_azure:
                 response = await self._call_azure_openai(messages)
             else:
                 response = await self._call_openai(messages)
@@ -185,8 +217,11 @@ class OpenAIService:
     async def _call_azure_openai(self, messages: List[Dict]) -> str:
         """Call Azure OpenAI API"""
         try:
-            response = openai.ChatCompletion.create(
-                engine=self.deployment_name,
+            print(f"Making Azure OpenAI request to deployment: {self.deployment_name}")
+            print(f"Message count: {len(messages)}")
+            
+            response = await self.client.chat.completions.create(
+                model=self.deployment_name,
                 messages=messages,
                 temperature=0.7,
                 max_tokens=1000,
@@ -195,15 +230,20 @@ class OpenAIService:
                 presence_penalty=0.1
             )
             
-            return response.choices[0].message.content.strip()
+            result = response.choices[0].message.content.strip()
+            print(f"Azure OpenAI response received successfully: {len(result)} characters")
+            return result
             
         except Exception as e:
+            print(f"Azure OpenAI API detailed error: {e}")
+            import traceback
+            traceback.print_exc()
             raise Exception(f"Azure OpenAI API error: {e}")
     
     async def _call_openai(self, messages: List[Dict]) -> str:
         """Call standard OpenAI API"""
         try:
-            response = openai.ChatCompletion.create(
+            response = await self.client.chat.completions.create(
                 model="gpt-4o",
                 messages=messages,
                 temperature=0.7,

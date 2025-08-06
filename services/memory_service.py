@@ -42,25 +42,29 @@ class MemoryService:
             # Create containers
             self.users_container_client = self.database.create_container_if_not_exists(
                 id=self.users_container,
-                partition_key=PartitionKey(path="/user_id"),
-                offer_throughput=400
+                partition_key=PartitionKey(path="/user_id")
             )
             
             self.conversations_container_client = self.database.create_container_if_not_exists(
                 id=self.conversations_container,
-                partition_key=PartitionKey(path="/user_id"),
-                offer_throughput=400
+                partition_key=PartitionKey(path="/user_id")
             )
             
             self.preferences_container_client = self.database.create_container_if_not_exists(
                 id=self.preferences_container,
-                partition_key=PartitionKey(path="/user_id"),
-                offer_throughput=400
+                partition_key=PartitionKey(path="/user_id")
             )
             
         except Exception as e:
             print(f"Error initializing Cosmos DB: {e}")
+            print("Falling back to local storage...")
             self.client = None
+            # Initialize local storage as fallback
+            self.local_storage = {
+                "users": {},
+                "conversations": {},
+                "preferences": {}
+            }
     
     async def get_user_profile(self, user_id: str) -> Optional[Dict]:
         """Retrieve user profile"""
@@ -196,30 +200,69 @@ class MemoryService:
     async def get_user_conversations(self, user_id: str, limit: int = 20) -> List[Dict]:
         """Get unique conversations for a user"""
         if self.client:
-            query = """
-            SELECT DISTINCT c.conversation_id, 
-                   MAX(c.timestamp) as last_message_time,
-                   COUNT(1) as message_count
-            FROM c 
-            WHERE c.user_id = @user_id 
-            GROUP BY c.conversation_id 
-            ORDER BY MAX(c.timestamp) DESC 
-            OFFSET 0 LIMIT @limit
-            """
-            parameters = [
-                {"name": "@user_id", "value": user_id},
-                {"name": "@limit", "value": limit}
-            ]
-            
-            items = list(self.conversations_container_client.query_items(
-                query=query,
-                parameters=parameters,
-                enable_cross_partition_query=True
-            ))
-            
-            return items
+            try:
+                # Simplified query without problematic ORDER BY on aggregated fields
+                query = """
+                SELECT c.conversation_id, c.timestamp, c.message, c.role
+                FROM c 
+                WHERE c.user_id = @user_id 
+                ORDER BY c.timestamp DESC
+                """
+                parameters = [
+                    {"name": "@user_id", "value": user_id}
+                ]
+                
+                items = list(self.conversations_container_client.query_items(
+                    query=query,
+                    parameters=parameters,
+                    enable_cross_partition_query=True
+                ))
+                
+                # Group by conversation_id and get the latest message for each
+                conversations_dict = {}
+                for item in items:
+                    conv_id = item["conversation_id"]
+                    if conv_id not in conversations_dict:
+                        conversations_dict[conv_id] = {
+                            "conversation_id": conv_id,
+                            "last_message_time": item["timestamp"],
+                            "last_message": item["message"],
+                            "message_count": 1
+                        }
+                    else:
+                        conversations_dict[conv_id]["message_count"] += 1
+                
+                # Convert to list and sort by last_message_time
+                conversations = list(conversations_dict.values())
+                conversations.sort(key=lambda x: x["last_message_time"], reverse=True)
+                
+                return conversations[:limit]
+                
+            except Exception as e:
+                print(f"Error querying conversations from Cosmos DB: {e}")
+                # Fall back to local storage
+                conversations = self.local_storage.get("conversations", {}).get(user_id, [])
+                conversation_groups = {}
+                
+                for conv in conversations:
+                    conv_id = conv["conversation_id"]
+                    if conv_id not in conversation_groups:
+                        conversation_groups[conv_id] = {
+                            "conversation_id": conv_id,
+                            "last_message_time": conv["timestamp"],
+                            "message_count": 0
+                        }
+                    conversation_groups[conv_id]["message_count"] += 1
+                    if conv["timestamp"] > conversation_groups[conv_id]["last_message_time"]:
+                        conversation_groups[conv_id]["last_message_time"] = conv["timestamp"]
+                
+                return sorted(
+                    list(conversation_groups.values()),
+                    key=lambda x: x["last_message_time"],
+                    reverse=True
+                )[:limit]
         else:
-            conversations = self.local_storage["conversations"].get(user_id, [])
+            conversations = self.local_storage.get("conversations", {}).get(user_id, [])
             conversation_groups = {}
             
             for conv in conversations:
@@ -233,7 +276,7 @@ class MemoryService:
                 conversation_groups[conv_id]["message_count"] += 1
                 if conv["timestamp"] > conversation_groups[conv_id]["last_message_time"]:
                     conversation_groups[conv_id]["last_message_time"] = conv["timestamp"]
-            
+
             return sorted(
                 list(conversation_groups.values()),
                 key=lambda x: x["last_message_time"],
