@@ -1,6 +1,6 @@
 # ITSM AI Agent 🤖
 
-A comprehensive AI-powered ITSM (IT Service Management) agent with Microsoft Teams integration, featuring contextual memory, visual analysis, human handoff capabilities, and proactive intelligence.
+A comprehensive AI-powered ITSM (IT Service Management) agent with Microsoft Teams and Copilot Studio integration, featuring contextual memory, visual analysis, human handoff capabilities, and proactive intelligence.
 
 ## ✨ Features
 
