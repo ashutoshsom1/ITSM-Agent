@@ -3,7 +3,7 @@ Configuration settings for the ITSM AI Agent
 """
 import os
 from typing import Optional
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
