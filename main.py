@@ -31,6 +31,11 @@ from services.human_handoff_service import HumanHandoffService
 from models.conversation_models import ConversationRequest, ConversationResponse, UserProfile
 from models.agent_models import AgentCapabilities, ProactiveResponse
 from utils.context_analyzer import ContextAnalyzer
+from utils.teams_integration import (
+    TeamsMessage, TeamsResponse, create_adaptive_card, create_hero_card,
+    create_suggested_actions, extract_teams_user_info, format_proactive_message,
+    format_error_message
+)
 
 app = FastAPI(
     title="AI Agent API",
@@ -310,36 +315,115 @@ async def get_proactive_insights(user_id: str, context: Dict[str, Any] = None):
 
 @app.post("/api/webhooks/teams")
 async def teams_webhook(payload: Dict[str, Any]):
-    """Webhook endpoint for Microsoft Teams integration"""
+    """Enhanced webhook endpoint for Microsoft Teams integration"""
     try:
-        # Process Teams bot messages
         activity_type = payload.get("type")
         
         if activity_type == "message":
-            # Handle regular message
-            user_id = payload.get("from", {}).get("id")
-            message_text = payload.get("text", "")
-            conversation_id = payload.get("conversation", {}).get("id")
+            # Extract user information using Teams integration utility
+            user_info = extract_teams_user_info(payload)
+            
+            # Create TeamsMessage object
+            teams_message = TeamsMessage.from_teams_activity(payload)
             
             # Process through main conversation endpoint
             request = ConversationRequest(
-                user_id=user_id,
-                message=message_text,
-                conversation_id=conversation_id,
-                user_name=payload.get("from", {}).get("name", "")
+                user_id=teams_message.user_id,
+                message=teams_message.text,
+                conversation_id=teams_message.conversation_id,
+                user_name=user_info.get("user_name", "")
             )
             
-            response = await process_conversation(request)
-            return {"type": "message", "text": response.message}
+            try:
+                response = await process_conversation(request)
+                
+                # Create enhanced Teams response with suggestions
+                suggestions = [item.get("title", "") for item in response.proactive_suggestions[:3]]
+                teams_response = format_proactive_message(
+                    response.message,
+                    user_info.get("user_name"),
+                    suggestions
+                )
+                
+                # Check if handoff is required and create appropriate card
+                if response.requires_handoff:
+                    handoff_card = create_adaptive_card(
+                        title="🤝 Connecting you with a human agent",
+                        text="I'm transferring your conversation to a human agent who can better assist you.",
+                        facts=[
+                            {"title": "Request ID", "value": response.conversation_id},
+                            {"title": "Status", "value": "In Queue"}
+                        ],
+                        actions=[
+                            {
+                                "type": "Action.Submit",
+                                "title": "Check Status",
+                                "data": {"action": "check_handoff_status"}
+                            }
+                        ]
+                    )
+                    teams_response.adaptive_card = handoff_card
+                
+                return teams_response.to_bot_framework_activity()
+                
+            except Exception as e:
+                # Return formatted error message
+                error_response = format_error_message(str(e), show_details=False)
+                return error_response.to_bot_framework_activity()
             
         elif activity_type == "conversationUpdate":
-            # Handle bot added to conversation
-            return {"type": "message", "text": "Welcome! I'm your AI assistant. How can I help you today?"}
+            # Enhanced welcome message with capabilities card
+            members_added = payload.get("membersAdded", [])
+            if any(member.get("id") != payload.get("recipient", {}).get("id") for member in members_added):
+                welcome_card = create_adaptive_card(
+                    title="👋 Welcome to your AI Assistant!",
+                    subtitle="I'm here to help you with your ITSM needs",
+                    text="Here's what I can do for you:",
+                    facts=[
+                        {"title": "💬 Contextual Memory", "value": "I remember our conversations"},
+                        {"title": "🖼️ Visual Analysis", "value": "Share screenshots for analysis"},
+                        {"title": "🤝 Human Handoff", "value": "Connect with human agents when needed"},
+                        {"title": "🧠 Proactive Intelligence", "value": "Smart suggestions based on patterns"}
+                    ],
+                    actions=[
+                        {
+                            "type": "Action.Submit",
+                            "title": "Get Started",
+                            "data": {"action": "get_started"}
+                        },
+                        {
+                            "type": "Action.Submit",
+                            "title": "View Capabilities",
+                            "data": {"action": "view_capabilities"}
+                        }
+                    ]
+                )
+                
+                welcome_response = TeamsResponse(
+                    text="Welcome! I'm your AI assistant. How can I help you today?",
+                    adaptive_card=welcome_card
+                )
+                
+                return welcome_response.to_bot_framework_activity()
+        
+        elif activity_type == "invoke":
+            # Handle adaptive card actions
+            action_data = payload.get("value", {})
+            action_type = action_data.get("action")
+            
+            if action_type == "get_started":
+                return {"type": "message", "text": "Great! You can ask me questions, share screenshots, or request help with any ITSM-related tasks."}
+            elif action_type == "view_capabilities":
+                capabilities = await get_agent_capabilities()
+                return {"type": "message", "text": f"Here are my capabilities: {json.dumps(capabilities, indent=2)}"}
+            elif action_type == "check_handoff_status":
+                return {"type": "message", "text": "Your request is being processed by our human agents. You'll be contacted shortly."}
         
         return {"status": "processed"}
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing Teams webhook: {str(e)}")
+        error_response = format_error_message(f"Error processing Teams webhook: {str(e)}")
+        return error_response.to_bot_framework_activity()
 
 @app.get("/api/capabilities")
 async def get_agent_capabilities():
@@ -376,6 +460,150 @@ async def get_agent_capabilities():
         "max_conversation_history": 50,
         "response_time_sla": "< 2 seconds"
     }
+
+@app.post("/api/teams/send-proactive-message")
+async def send_proactive_teams_message(
+    user_id: str,
+    message: str,
+    conversation_id: str,
+    message_type: str = "info"
+):
+    """Send a proactive message to Teams user"""
+    try:
+        # Get user profile for personalization
+        user_profile = await memory_service.get_user_profile(user_id)
+        user_name = user_profile.get("user_name") if user_profile else None
+        
+        # Create appropriate message based on type
+        if message_type == "alert":
+            card = create_adaptive_card(
+                title="🚨 Alert",
+                text=message,
+                actions=[
+                    {
+                        "type": "Action.Submit",
+                        "title": "Acknowledge",
+                        "data": {"action": "acknowledge_alert"}
+                    },
+                    {
+                        "type": "Action.Submit", 
+                        "title": "Get Help",
+                        "data": {"action": "get_help"}
+                    }
+                ]
+            )
+            teams_response = TeamsResponse(text=message, adaptive_card=card)
+        elif message_type == "reminder":
+            suggestions = ["Snooze 15 min", "Mark Complete", "View Details"]
+            teams_response = format_proactive_message(message, user_name, suggestions)
+        else:
+            teams_response = format_proactive_message(message, user_name)
+        
+        # In a real implementation, you would send this via Bot Framework
+        # For now, we'll return the formatted message
+        return {
+            "status": "sent",
+            "message": teams_response.to_bot_framework_activity(),
+            "user_id": user_id,
+            "conversation_id": conversation_id
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error sending proactive message: {str(e)}")
+
+@app.post("/api/teams/create-card")
+async def create_teams_card(
+    card_type: str,
+    title: str,
+    content: Dict[str, Any]
+):
+    """Create various types of Teams cards"""
+    try:
+        if card_type == "adaptive":
+            card = create_adaptive_card(
+                title=title,
+                subtitle=content.get("subtitle"),
+                text=content.get("text"),
+                facts=content.get("facts"),
+                actions=content.get("actions"),
+                image_url=content.get("image_url")
+            )
+        elif card_type == "hero":
+            card = create_hero_card(
+                title=title,
+                subtitle=content.get("subtitle"),
+                text=content.get("text"),
+                images=content.get("images"),
+                buttons=content.get("buttons")
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported card type: {card_type}")
+        
+        return {
+            "card_type": card_type,
+            "card": card
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating card: {str(e)}")
+
+@app.post("/api/copilot-studio")
+async def copilot_studio_endpoint(request: Dict[str, Any]):
+    """
+    Simplified endpoint for Microsoft Copilot Studio integration
+    Expected input format from Copilot Studio:
+    {
+        "message": "user message",
+        "user_id": "user123",
+        "user_name": "John Doe",
+        "conversation_id": "conv123"
+    }
+    """
+    try:
+        # Extract data from Copilot Studio request
+        message = request.get("message", "")
+        user_id = request.get("user_id", "copilot_user")
+        user_name = request.get("user_name", "User")
+        conversation_id = request.get("conversation_id", "copilot_conv")
+        
+        if not message:
+            return {
+                "response": "I didn't receive a message. Please try again.",
+                "suggestions": ["Try asking a question", "Upload an image", "Request help"]
+            }
+        
+        # Create conversation request
+        conv_request = ConversationRequest(
+            user_id=user_id,
+            message=message,
+            conversation_id=conversation_id,
+            user_name=user_name
+        )
+        
+        # Process through main conversation logic
+        response = await process_conversation(conv_request)
+        
+        # Format response for Copilot Studio
+        copilot_response = {
+            "response": response.message,
+            "suggestions": [item.get("title", "") for item in response.proactive_suggestions[:3]],
+            "requires_human": response.requires_handoff,
+            "user_insights": response.user_insights if hasattr(response, 'user_insights') else {}
+        }
+        
+        # Add special handling for handoff
+        if response.requires_handoff:
+            copilot_response["handoff_message"] = "I'm connecting you with a human agent who can better assist you."
+            copilot_response["suggestions"] = ["Wait for agent", "Provide more details", "Check status"]
+        
+        return copilot_response
+        
+    except Exception as e:
+        return {
+            "response": f"I'm having trouble processing your request. Please try again or contact support.",
+            "suggestions": ["Try again", "Simplify your question", "Contact IT support"],
+            "error": str(e) if app.debug else None
+        }
 
 # Helper functions
 async def _should_trigger_handoff(message: str, context_analysis: Dict) -> bool:
@@ -434,4 +662,4 @@ async def _generate_proactive_suggestions(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, port=8000)
+    uvicorn.run(app,port=8000)
